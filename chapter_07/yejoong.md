@@ -283,3 +283,162 @@ pthread_mutex_unlock(&mutex); //여기서 뮤텍스락을 해제함.
 
 # 7.4. JAVA에서의 동기화
 Java 모니터, 재진입 락, 세마포, 조건변수.
+
+### Java모니터
+* BoundedBuffer 클래스 : 스레드 동기화 위한 모니터 비슷한 기법
+    * 생산자, 소비자 문제 해결 - insert(), remove() 메소드 호출
+
+java의 모든 객체는 하나의 락과 연결되어 있다.
+메소드가 synchronized 로 선언된 경우, 메소드 호출 위해 그 객체와 연결된 락을 획득해야 한다.
+BoundedBuffer 클래스의 insert(), remove()메소드 정의시 synchronized 선언해야 synchronized 메소드가 된다.
+syncrhonized 메소드를 호출하려면,  BoundedBuffer 의 객체 인스턴스와 연결된 락을 소유해야 한다.
+다른 스레드가 이미 락을 소유한 경우, synchronized 메소드를 호출한 스레드는 봉쇄되어, 객체의 락에 설정된 진입 집합(entry set) 에 추가된다.
+
+대기 집합
+처음에는 비어 있다. 스레드가 synchronized 메소드에 들어가면 객체 락 소유
+그러나 이 스레드는 특정 조건 충족 X라서 계속할 수 없다고 결정도 할 수 있다.
+ex) 생산자가 insert() 호출했는데 버퍼가 가득차있는 경우
+그러면 스레드는 락 해제하고, 게속할 수 있는 조건 충족시까지 기다린다.
+스레드의 wait()호출
+1. 스레드가 객체 락 해제
+2. 스레드 상태가 봉쇄됨으로 설정
+3. 스레드는 그 객체의 대기 집합에 넣어진다.
+
+notify() 메소드
+: 소비자 스레드가 생산자가 이제 진행 가능하다는 것을 알리기 위해 insert/remove메소드의 끝에서 호출하는 메소드
+1. 대기집합의 스레드 리스트에서 임의의 스레드 T를 선택
+2. 스레드 T를 대기집합 -> 진입집합 으로 이동
+3. T의 상태를 봉쇄됨 -> 실행가능 설정
+>> T는 이제 다른 스레드와 락 경쟁을 할 수 있다.
+
+ T가 락 제어를 다시 획득하면, wait()호출에서 복귀하여 count 값을 다시 확인할 수 있다.
+
+ 대부분의 자바 가상 머신은 FIFO 정책에 따라 대기 집합의 스레드를 정렬한다.
+
+### 재진입 락(Reentrant Locks)
+* synchronized 명령문처럼 작동
+* ReentrantLock은 단일 스레드가 소유, 공유 자원에 대한 상호 배타적 엑세스 제공
+* 공정성 매개변수
+    * 공정성? 오래 기다린 스레드에 락을 줄 수 있는 설정
+* 스레드는 lock() 메소드 호출하여 ReentrantLock 락을 획득
+* 락을 사용할 수 있거나 lock() 호출한 스레드가 이미 락 소유하고 있는 경우, 재진입
+* lock()은 호출 스레드에게 락 소유권을 주고 제어를 반환함
+* 락을 사용할 수 없는 경우 호출 스레드는 소유자가 unlocK()을 호출하여 락이 배정될 때까지 봉쇄됨
+```
+Lock key = new ReentrantLock();
+key.lock();
+try {
+    /* critical section */
+}
+finally {
+    key.unlock(); /* 임계구역 완료 or try에서 예외 발생 시 락 해제 무조건 보장 */
+}
+```
+
+### 세마포어(Semaphores)
+```
+Semaphore(int value); # value는 세마포어의 초기값 지정(음수 허용)
+```
+
+
+상호 배제를 위해 세마포어 사용하는 방법
+```
+Semaphore sem = new Semaphore(1);
+try{
+    sem.acquire();
+    /* critical section */
+}
+catch (InterruptedException ie) { } 
+/* 락 획득하려는 스레드가 인터럽트 되면 acquire() 메소드가 InterruptedException 발생시킴 */
+finally {
+    sem.release(); /* 세마포어 해제는 반드시 되어야하므로 finally 절에 배치 */
+}
+```
+
+### 조건 변수 (Condition values)
+ReentrantLock 이 synchronized 명령문과 유사하듯이
+
+조건변수는 wait() 및 notify()메소드와 유사하다
+
+| 기능      | `synchronized + wait()` | `ReentrantLock + Condition` |
+| ------- | ----------------------- | --------------------------- |
+| 조건변수 개수 | 하나만 가능                  | 여러 개 생성 가능                  |
+| 깨어나는 대상 | 무작위 (notify)            | 명확하게 지정 가능 (signal)         |
+| 락 해제 방식 | 자동                      | 수동 (`lock()` / `unlock()`)  |
+
+🎯 예시 시나리오
+5개의 스레드가 있고, 각 스레드는 자기 차례일 때만 작업을 할 수 있어요.
+
+turn이라는 변수가 현재 차례인 스레드 번호를 가지고 있음.
+
+스레드 번호와 turn이 일치하는 스레드만 일을 진행해야 해요.
+
+나머지는 자기 차례가 올 때까지 기다려야 해요.
+
+```java
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
+
+public class TurnBasedWorker {
+    private final ReentrantLock lock = new ReentrantLock(); // 락 수동관리
+    private final Condition[] conditions = new Condition[5]; // 각 스레드용 조건 변수
+    private int turn = 0; // 현재 차례인 스레드 번호
+
+    public TurnBasedWorker() {
+        for (int i = 0; i < 5; i++) {
+            conditions[i] = lock.newCondition(); // 스레드별 조건 변수 생성
+        }
+    }
+
+    public void doWork(int threadNumber) throws InterruptedException {
+        lock.lock();
+        try {
+            while (threadNumber != turn) {
+                // 내 차례가 아니면 대기
+                conditions[threadNumber].await();
+            }
+
+            // 내 차례면 작업 수행
+            System.out.println("Thread " + threadNumber + " is working");
+
+            // 다음 스레드 차례로 넘기고, 해당 조건변수 깨움
+            turn = (turn + 1) % 5;
+            conditions[turn].signal(); // 다음 차례 스레드만 깨운다
+        } finally {
+            lock.unlock(); // 락 해제
+        }
+    }
+
+    public static void main(String[] args) {
+        TurnBasedWorker worker = new TurnBasedWorker();
+
+        for (int i = 0; i < 5; i++) {
+            final int threadNum = i;
+            new Thread(() -> {
+                try {
+                    for (int j = 0; j < 3; j++) {
+                        worker.doWork(threadNum); // 각 스레드는 3번씩 일함
+                        Thread.sleep(100); // 작업 사이에 딜레이
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }).start();
+        }
+    }
+}
+
+```
+🧾 코드 해석 (쉬운 설명)
+ReentrantLock: 락 수동 관리.
+
+Condition[]: 각 스레드마다 자기만의 기다리는 방을 갖게 함.
+
+turn: 지금 작업할 차례인 스레드 번호.
+
+await(): 내 차례가 아니면 기다림.
+
+signal(): 다음 차례인 스레드를 정확히 지정해서 깨움.
+
+# 7.5 대체 방안
+* atomic 트랜잭션 메모리 : 개발자가 아닌 트랜잭션 메모리 시스템이 원자성 보장할 책임이 있다
